@@ -121,65 +121,96 @@ For full technical details, design decisions, and known limitations see
 
 ---
 
-## Requirements
+## Setup
 
-```
-geopandas >= 1.0
-shapely >= 2.0      # bulk array API required
-numpy
-scipy
-pandas
-```
+All commands below are meant to be typed into a terminal (the Terminal app on
+macOS or Linux; on Windows, use Windows Subsystem for Linux).
 
-Install with:
+### Step 1 — Install uv
+
+`uv` is a tool that installs Python and all required libraries automatically,
+in an isolated environment that cannot interfere with anything else on your
+computer. Install it once with:
 
 ```bash
-pip install geopandas shapely numpy scipy pandas
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
----
+After the installer finishes, close and reopen your terminal so the `uv`
+command becomes available. You can verify the installation with:
 
-## Data
+```bash
+uv --version
+```
 
-Place the ICC building GeoPackage at:
+### Step 2 — Get the dataset
+
+The ICC building GeoPackage (`EdificiosAMB.gpkg`, 571 MB) is not included in
+this repository. Obtain it from the ICC download service and place it at:
 
 ```
 data/buildings.gpkg
 ```
 
-The file is not included in this repository (571 MB). It can be obtained from
-the ICC download service. The `data/` directory is listed in `.gitignore`.
+(Create the `data/` folder inside the repository if it does not exist yet.)
+
+### Step 3 — Create the environment
+
+Open a terminal, navigate to the repository folder, and run:
+
+```bash
+uv sync
+```
+
+This does three things automatically:
+1. Downloads Python 3.14 if it is not already on your machine.
+2. Creates a self-contained environment in a folder called `.venv/` inside the
+   repository.
+3. Installs every library at exactly the version used for the original run
+   (recorded in `uv.lock`).
+
+The first run takes a couple of minutes while packages are downloaded;
+subsequent runs are nearly instant because everything is cached.
 
 ---
 
 ## Usage
 
-```bash
-python envelope_area.py [--input FILE] [--output DIR]
-```
+### Verify the installation first
 
-Default input: `data/buildings.gpkg`. Default output: `output/`.
-
-Run with explicit paths:
+Before processing the full dataset, run the test suite to confirm the
+environment is working correctly:
 
 ```bash
-python envelope_area.py --input /path/to/buildings.gpkg --output /path/to/results/
+uv run python tests.py
 ```
 
-Results are written to `<output>/buildings_exposed.gpkg`. A summary report is
-printed to the terminal and written to `<output>/report.txt`. An overlap audit
-(pairs of buildings with genuine 2-D footprint overlaps, indicating ICC
-digitising errors) is written to `<output>/overlap_audit.csv` when such pairs
-are found.
+All tests finish in under one second and check the core calculations against
+hand-computed values. You should see no errors.
 
-Run the synthetic test suite before any production run:
+The prefix `uv run` tells the shell to use the project's own environment in
+`.venv/` rather than any other Python installation that may be on your system.
+Use it for every command below.
+
+### Run the pipeline
 
 ```bash
-python tests.py
+uv run python envelope_area.py --input data/buildings.gpkg --output output/
 ```
 
-All tests complete in under one second and verify the core algorithms
-against hand-computed expected values without requiring the full dataset.
+Replace the paths after `--input` and `--output` with the actual locations on
+your system if they differ. The `--input` file must be a GeoPackage (`.gpkg`);
+the `--output` folder will be created if it does not exist.
+
+The pipeline prints a progress summary to the terminal as it runs and writes
+three files when it finishes:
+
+| File | Contents |
+|------|----------|
+| `output/buildings_exposed.gpkg` | Main result — one row per building (see [Output](#output)) |
+| `output/report.txt` | The same summary that was printed to the terminal |
+| `output/overlap_audit.csv` | Pairs of buildings with genuine 2-D footprint overlaps (ICC digitising errors); absent if none were found |
+
 
 ---
 
