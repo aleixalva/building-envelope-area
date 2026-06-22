@@ -61,15 +61,18 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
     is meaningless as a wall length.
 
     NEW approach: measure what portion of each building's boundary lies
-    within the other building's buffered outline, then average the two
-    measurements to cancel the ~EPS corner bias introduced by the buffer
-    end-caps.
+    within the other building's buffered outline, average the two
+    measurements, then subtract 2*eps to correct for the end-cap bias.
 
-        la = length of j's boundary that falls inside buffer(a, eps)
-        lb = length of i's boundary that falls inside buffer(b, eps)
-        shared = 0.5 * (la + lb)
+        la     = length of j's boundary that falls inside buffer(a, eps)
+        lb     = length of i's boundary that falls inside buffer(b, eps)
+        shared = max(0, 0.5*(la + lb) - 2*eps)
 
-    For a clean shared edge this returns the true edge length, within ~EPS.
+    Without the -2*eps correction, each measurement picks up ~eps of the
+    adjacent (non-shared) wall at each corner endpoint. Both la and lb carry
+    the same bias so averaging does not help; the correction removes it.
+    For a clean shared edge this returns the true edge length to within
+    residual floating-point noise.
     For a genuine 2-D overlap it returns roughly the outline length of the
     overlapping region -- a data error that must be flagged separately (see
     the overlap audit) rather than treated as a wall.
@@ -83,7 +86,12 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
     """
     la = geom_b.boundary.intersection(buf_a).length
     lb = geom_a.boundary.intersection(geom_b.buffer(eps)).length
-    return 0.5 * (la + lb)
+    # Subtract 2*eps to correct for end-cap bias: the buffer circle at each of
+    # the two endpoints of the shared segment overhangs the corner and captures
+    # ~eps of the adjacent (non-shared) wall. Both la and lb carry this bias,
+    # so averaging does not cancel it. Subtracting 2*eps (one per endpoint)
+    # restores the true edge length. See the matching comment in pipeline.py.
+    return max(0.0, 0.5 * (la + lb) - 2.0 * eps)
 
 
 def repair_heights(gdf, h_floor=H_FLOOR):
@@ -346,10 +354,10 @@ def test_a_flat_regression():
 
     assert len(shared) == 1, f"Expected 1 shared pair, got {len(shared)}"
     L = list(shared.values())[0]
-    # The boundary-intersection method adds ~EPS at each end-cap (the buffer
-    # circle extends past the shared edge at both corners), so L ≈ 10 + 2*EPS.
-    # Tolerance: 4*EPS = 0.2 m, well above the expected ~0.1 m bias.
-    assert abs(L - 10.0) < EPS * 4, f"Shared length {L:.4f} m, expected ~10 m"
+    # After the -2*EPS end-cap correction in shared_edge_length, L should be
+    # close to the true 10 m. Residual error is sub-millimetre for this clean
+    # rectangular case; EPS*2 = 0.1 m tolerance is very conservative.
+    assert abs(L - 10.0) < EPS * 2, f"Shared length {L:.4f} m, expected ~10 m"
 
     result = compute_exposed_area(gdf, shared)
 
