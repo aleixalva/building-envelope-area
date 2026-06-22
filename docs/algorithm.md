@@ -369,7 +369,7 @@ tile is 4.9 % of buildings, with a maximum raw fraction of 1.049.
 
 ## 8. Named constants
 
-All parameters are defined as named constants at the top of `pipeline.py` so
+All parameters are defined as named constants at the top of `envelope_area.py` so
 they can be audited and adjusted in one place.
 
 | Constant | Value | Meaning |

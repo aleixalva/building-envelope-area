@@ -6,7 +6,7 @@ elevation data, runs the relevant pipeline steps using the FIXED algorithms,
 and asserts that the output matches the hand-computed expected value.
 
 Run with:
-    ~/.uv-global/bin/python test_exposed_area.py
+    ~/.uv-global/bin/python tests.py
 
 All tests complete in well under 1 second. They exist so that the correctness
 of the pipeline can be verified without running the full 48-hour Barcelona job.
@@ -25,7 +25,7 @@ from shapely.geometry import box
 from shapely.strtree import STRtree
 
 # ---------------------------------------------------------------------------
-# Constants, which must match the values defined in pipeline.py
+# Constants, which must match the values defined in envelope_area.py
 # ---------------------------------------------------------------------------
 
 EPS = 0.05           # snapping tolerance in metres: buildings with a gap
@@ -90,7 +90,7 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
     # the two endpoints of the shared segment overhangs the corner and captures
     # ~eps of the adjacent (non-shared) wall. Both la and lb carry this bias,
     # so averaging does not cancel it. Subtracting 2*eps (one per endpoint)
-    # restores the true edge length. See the matching comment in pipeline.py.
+    # restores the true edge length. See the matching comment in envelope_area.py.
     return max(0.0, 0.5 * (la + lb) - 2.0 * eps)
 
 

@@ -25,7 +25,7 @@ Pipeline steps:
     6. Save results and write a summary report.
 
 Usage:
-    python pipeline.py [--input FILE] [--output DIR]
+    python envelope_area.py [--input FILE] [--output DIR]
 
     --input  FILE   GeoPackage to process (default: data/EdificiosAMB.gpkg)
     --output DIR    Directory for all output files  (default: output/)

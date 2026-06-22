@@ -1,4 +1,4 @@
-# Building Exposed Surface Area: Barcelona Metropolitan Area
+# Building Envelope Area: Barcelona Metropolitan Area
 
 Computes the exterior surface area of buildings exposed to outdoor air (roof
 and walls, minus shared party walls) from the ICC LoD1 building dataset for
@@ -152,7 +152,7 @@ the ICC download service. The `data/` directory is listed in `.gitignore`.
 ## Usage
 
 ```bash
-python pipeline.py [--input FILE] [--output DIR]
+python envelope_area.py [--input FILE] [--output DIR]
 ```
 
 Default input: `data/EdificiosAMB.gpkg`. Default output: `output/`.
@@ -160,7 +160,7 @@ Default input: `data/EdificiosAMB.gpkg`. Default output: `output/`.
 Run with explicit paths:
 
 ```bash
-python pipeline.py --input /path/to/EdificiosAMB.gpkg --output /path/to/results/
+python envelope_area.py --input /path/to/EdificiosAMB.gpkg --output /path/to/results/
 ```
 
 Results are written to `<output>/buildings_exposed.gpkg`. A summary report is
