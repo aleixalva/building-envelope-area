@@ -96,6 +96,15 @@ OVERLAP_AUDIT_AREA = 0.5
 # digitising errors (partial overlaps that are not full containment). The pair
 # is kept in the dataset but marked so the operator can quantify their impact.
 
+COMPACTNESS_FLOOR = 0.02
+# Minimum isoperimetric quotient (4π·area / perimeter²) for a building to be
+# retained after sliver removal. A perfect circle scores 1.0; a square scores
+# 0.785. Digitising artefacts can have area above AREA_FLOOR but a perimeter
+# an order of magnitude too large for their footprint (thin strip polygons left
+# by boundary operations). Such buildings produce inflated wall_area_naive values
+# and accumulate large shared-wall deductions that corrupt their neighbourhood.
+# A quotient of 0.02 corresponds roughly to a strip 50× longer than it is wide.
+
 
 # ---------------------------------------------------------------------------
 # Command-line arguments
@@ -318,6 +327,24 @@ gdf_clean = (
     .reset_index(drop=True)
 )
 
+# Compactness filter: some buildings pass the area threshold but have a perimeter
+# far too large for their footprint. These are thin needle-strip artefacts from
+# polygon boundary operations: a few metres of area but tens of metres of
+# perimeter. The isoperimetric quotient Q = 4π·area / perimeter² (= 1 for a
+# circle, 0.785 for a square, approaching 0 for a thin strip) identifies them.
+# Their inflated perimeter produces unrealistically large wall_area_naive values
+# and accumulated shared-wall deductions that corrupt neighbouring buildings.
+_compact = 4.0 * np.pi * gdf_clean["footprint_area"] / gdf_clean.geometry.length ** 2
+n_low_compact = int((_compact < COMPACTNESS_FLOOR).sum())
+if n_low_compact > 0:
+    print(f"Dropping {n_low_compact} buildings with compactness < {COMPACTNESS_FLOOR:.2f} "
+          f"(needle-slivers with pathological perimeter despite normal area)")
+gdf_clean = (
+    gdf_clean[_compact >= COMPACTNESS_FLOOR]
+    .copy()
+    .reset_index(drop=True)
+)
+
 # Detect and remove contained buildings: cases where one building footprint
 # lies almost entirely inside another. This is physically impossible and
 # indicates a digitising error in the ICC dataset (a large block polygon
@@ -492,31 +519,46 @@ lb = shapely.length(shapely.intersection(bounds_i, bufs[right_idx]))
 # averaging la and lb makes the measurement symmetric and partially cancels
 # the ~EPS end-cap bias introduced by the buffer circles at segment ends.
 
-shared_lengths = np.maximum(0.0, 0.5 * (la + lb) - 2.0 * EPS)
-# The buffer end-caps introduce a systematic positive bias of approximately EPS
-# per endpoint of the shared segment. For a clean shared edge of length L, the
-# buffer circle at each of the two endpoints overhangs the corner and captures
-# ~EPS of the adjacent wall of the neighbour. Both la and lb carry the same
-# bias (the corner is shared by both buildings), so averaging does not cancel
-# it. The correction -2*EPS removes one EPS per endpoint (two endpoints per
-# segment), restoring the true edge length to within residual floating-point
-# noise.
-# Trade-off: T-junction endpoints (where one wall ends mid-segment of the
-# other) contribute ~0 arc bias, so the correction slightly under-estimates
-# those pairs. This is the smaller error: the systematic over-deduction
-# affecting 12 % of buildings is a larger problem than the occasional
-# T-junction under-correction.
-# Confirmed by Test A: a 10 m test edge measured at ~10.10 m before, ~10.00 m after.
+# End-cap correction: the buffer circle at each endpoint of a shared segment
+# captures ~EPS of the adjacent (non-shared) wall. Both la and lb carry the
+# same bias (the endpoint is shared by both buildings), so averaging does not
+# cancel it. Subtracting 2*EPS from each measurement (one EPS per endpoint)
+# restores the true edge length to within residual floating-point noise.
+# Trade-off: T-junction endpoints contribute ~0 arc bias, so the correction
+# slightly under-estimates those pairs. This is the smaller error.
+#
+# Asymmetric deduction: rather than averaging la and lb into a single shared
+# length, the corrected measurements are kept separate and applied to the
+# building each one directly measures:
+#
+#   L_for_i (used for building left_idx's deduction):
+#       lb corrected = how much of building i's boundary falls inside buffer(j).
+#       This is the direct measurement of how much of i's wall faces j.
+#
+#   L_for_j (used for building right_idx's deduction):
+#       la corrected = how much of building j's boundary falls inside buffer(i).
+#       This is the direct measurement of how much of j's wall faces i.
+#
+# For a symmetric straight-wall pair (la ≈ lb) the result is identical to the
+# old average. For a concave-wrapping pair (building j is U-shaped and encloses
+# building i on multiple sides), lb < la: j's inner wall is longer than i's
+# outer wall facing j. Using lb directly for i's deduction prevents overcounting
+# i's hidden wall; the old average 0.5*(la+lb) inflated it by (la-lb)/2.
+L_for_i = np.maximum(0.0, lb - 2.0 * EPS)
+L_for_j = np.maximum(0.0, la - 2.0 * EPS)
 
-# discard pairs with no meaningful shared boundary (point contacts or
-# bounding-box false positives that survived the predicate filter)
-valid          = shared_lengths > 1e-6
-left_idx       = left_idx[valid]
-right_idx      = right_idx[valid]
-shared_lengths = shared_lengths[valid]
+# discard pairs where neither building has a meaningful shared boundary
+# (point contacts or bounding-box false positives that survived the predicate filter)
+valid     = (L_for_i > 1e-6) | (L_for_j > 1e-6)
+left_idx  = left_idx[valid]
+right_idx = right_idx[valid]
+L_for_i   = L_for_i[valid]
+L_for_j   = L_for_j[valid]
 
 n_shared_pairs      = len(left_idx)
-total_shared_length = float(shared_lengths.sum())
+total_shared_length = float(0.5 * (L_for_i + L_for_j).sum())
+# reported as the average of the two per-building measurements, consistent
+# with the shared-length concept; for symmetric pairs this equals either value.
 
 elapsed_shared = time.time() - t0_shared
 print(f"Shared wall pairs found: {n_shared_pairs:,}")
@@ -602,16 +644,18 @@ base_i = base_arr[left_idx]
 base_j = base_arr[right_idx]
 h_i = height_arr[left_idx]
 h_j = height_arr[right_idx]
-L   = shared_lengths
 
 min_top = np.minimum(top_i, top_j)  # elevation below which both buildings are hidden
 
-ded_i = L * np.clip(min_top - base_i, 0.0, h_i)
-ded_j = L * np.clip(min_top - base_j, 0.0, h_j)
-# ded_i[k]: wall area of building left_idx[k] hidden by building right_idx[k]
-# ded_j[k]: wall area of building right_idx[k] hidden by building left_idx[k]
-# Asymmetric: a building on higher ground hides more of its lower neighbour's
-# wall than the lower neighbour hides of its own.
+ded_i = L_for_i * np.clip(min_top - base_i, 0.0, h_i)
+ded_j = L_for_j * np.clip(min_top - base_j, 0.0, h_j)
+# ded_i[k]: wall area of building left_idx[k] hidden by building right_idx[k].
+# ded_j[k]: wall area of building right_idx[k] hidden by building left_idx[k].
+# L_for_i and L_for_j are the asymmetric shared-length measurements: lb-corrected
+# for i (i's wall facing j) and la-corrected for j (j's wall facing i). Both the
+# plan-length and the elevation-interval clip are asymmetric: a building on higher
+# ground hides more of its lower neighbour's wall than the lower neighbour hides
+# of its own.
 
 wall_deduction = np.zeros(len(gdf_clean))
 np.add.at(wall_deduction, left_idx,  ded_i)
@@ -699,6 +743,7 @@ report_lines = [
     f"  Sliver threshold            : {threshold_area:>10.4f} m²"
     + ("  [KDE fallback]" if kde_used_fallback else "  [KDE]"),
     f"  Slivers removed             : {n_slivers:>10,}",
+    f"  Low-compactness removed     : {n_low_compact:>10,}",
     f"  Contained buildings removed : {n_contained:>10,}",
     f"  Buildings processed         : {n_buildings:>10,}",
     "",

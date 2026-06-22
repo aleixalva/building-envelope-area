@@ -43,6 +43,9 @@ CONTAINMENT_FRAC = 0.9   # if the intersection covers more than this fraction
 OVERLAP_AUDIT_AREA = 0.5  # m²: 2-D intersections larger than this are flagged
                            # as ICC digitizing errors in the overlap audit.
 
+COMPACTNESS_FLOOR = 0.02  # minimum isoperimetric quotient (4π·area/perimeter²).
+                           # Buildings below this are needle-strip artefacts.
+
 
 # ---------------------------------------------------------------------------
 # Core algorithm functions
@@ -53,29 +56,29 @@ OVERLAP_AUDIT_AREA = 0.5  # m²: 2-D intersections larger than this are flagged
 
 def shared_edge_length(geom_a, geom_b, buf_a, eps):
     """
-    Compute the shared plan-length between two building footprints.
+    Compute the per-building shared plan-lengths between two building footprints.
 
     OLD approach (removed): buffer both polygons, intersect, halve the
     perimeter of the resulting sliver. This is wrong when the intersection
-    is a genuine 2-D overlap (data error), half the perimeter of a blob
-    is meaningless as a wall length.
+    is a genuine 2-D overlap (data error).
 
-    NEW approach: measure what portion of each building's boundary lies
-    within the other building's buffered outline, average the two
-    measurements, then subtract 2*eps to correct for the end-cap bias.
+    NEW approach: measure what portion of each building's boundary lies within
+    the other building's buffered outline, subtract 2*eps from each to correct
+    for the buffer end-cap bias, and keep the two measurements SEPARATE rather
+    than averaging them:
 
-        la     = length of j's boundary that falls inside buffer(a, eps)
-        lb     = length of i's boundary that falls inside buffer(b, eps)
-        shared = max(0, 0.5*(la + lb) - 2*eps)
+        la      = length of b's boundary inside buffer(a, eps)
+        lb      = length of a's boundary inside buffer(b, eps)
+        L_for_a = max(0, lb - 2*eps)   [a's wall facing b, used for a's deduction]
+        L_for_b = max(0, la - 2*eps)   [b's wall facing a, used for b's deduction]
 
-    Without the -2*eps correction, each measurement picks up ~eps of the
-    adjacent (non-shared) wall at each corner endpoint. Both la and lb carry
-    the same bias so averaging does not help; the correction removes it.
-    For a clean shared edge this returns the true edge length to within
-    residual floating-point noise.
-    For a genuine 2-D overlap it returns roughly the outline length of the
-    overlapping region, a data error that must be flagged separately (see
-    the overlap audit) rather than treated as a wall.
+    For a symmetric straight-wall pair (la ≈ lb) the two values are identical
+    and equal to the old 0.5*(la+lb) - 2*eps result. For a concave-wrapping
+    pair (building b is U-shaped and encloses building a on multiple sides),
+    la > lb: b's inner concave wall is longer than a's outer wall. Using lb
+    directly for a's deduction prevents overcounting a's hidden wall; the old
+    average 0.5*(la+lb) inflated it by (la-lb)/2, causing deduction fractions
+    above 1.0 for enclosed buildings.
 
     Parameters
     ----------
@@ -83,15 +86,21 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
     buf_a          : geom_a.buffer(eps), precomputed once per building a
                      so it is not recomputed for every candidate neighbour.
     eps            : snapping tolerance in metres (EPS constant)
+
+    Returns
+    -------
+    (L_for_a, L_for_b) : tuple of floats, per-building shared lengths in metres.
+                          L_for_a is used when computing a's wall deduction;
+                          L_for_b is used when computing b's wall deduction.
     """
     la = geom_b.boundary.intersection(buf_a).length
     lb = geom_a.boundary.intersection(geom_b.buffer(eps)).length
     # Subtract 2*eps to correct for end-cap bias: the buffer circle at each of
-    # the two endpoints of the shared segment overhangs the corner and captures
-    # ~eps of the adjacent (non-shared) wall. Both la and lb carry this bias,
-    # so averaging does not cancel it. Subtracting 2*eps (one per endpoint)
-    # restores the true edge length. See the matching comment in envelope_area.py.
-    return max(0.0, 0.5 * (la + lb) - 2.0 * eps)
+    # the two endpoints of the shared segment captures ~eps of the adjacent
+    # (non-shared) wall. The correction is applied to each measurement separately.
+    L_for_a = max(0.0, lb - 2.0 * eps)   # how much of a's boundary faces b
+    L_for_b = max(0.0, la - 2.0 * eps)   # how much of b's boundary faces a
+    return L_for_a, L_for_b
 
 
 def repair_heights(gdf, h_floor=H_FLOOR):
@@ -155,7 +164,9 @@ def find_shared_pairs(gdf, eps=EPS):
 
     Returns
     -------
-    shared        : dict (i, j) -> shared_length_metres, with i < j
+    shared        : dict (i, j) -> (L_for_i, L_for_j), with i < j.
+                    L_for_i: corrected length of i's boundary facing j (for i's deduction).
+                    L_for_j: corrected length of j's boundary facing i (for j's deduction).
     overlap_audit : list of (i, j, overlap_area_m2) for flagged pairs
     """
     geoms = gdf.geometry.values
@@ -186,9 +197,9 @@ def find_shared_pairs(gdf, eps=EPS):
                 overlap_audit.append((i, j, raw.area))
 
             # --- shared edge length ---
-            L = shared_edge_length(geoms[i], geom_j, buf_i, eps)
-            if L > 1e-6:
-                shared[(i, j)] = L
+            L_for_i, L_for_j = shared_edge_length(geoms[i], geom_j, buf_i, eps)
+            if L_for_i > 1e-6 or L_for_j > 1e-6:
+                shared[(i, j)] = (L_for_i, L_for_j)
 
     return shared, overlap_audit
 
@@ -258,11 +269,11 @@ def compute_exposed_area(gdf, shared):
 
     wall_deduction = np.zeros(n)
 
-    for (idx_i, idx_j), L in shared.items():
+    for (idx_i, idx_j), (L_for_i, L_for_j) in shared.items():
         min_top = min(top[idx_i], top[idx_j])
 
-        ded_i = L * np.clip(min_top - base[idx_i], 0.0, height[idx_i])
-        ded_j = L * np.clip(min_top - base[idx_j], 0.0, height[idx_j])
+        ded_i = L_for_i * np.clip(min_top - base[idx_i], 0.0, height[idx_i])
+        ded_j = L_for_j * np.clip(min_top - base[idx_j], 0.0, height[idx_j])
 
         wall_deduction[idx_i] += ded_i
         wall_deduction[idx_j] += ded_j
@@ -353,24 +364,25 @@ def test_a_flat_regression():
     shared, _ = find_shared_pairs(gdf)
 
     assert len(shared) == 1, f"Expected 1 shared pair, got {len(shared)}"
-    L = list(shared.values())[0]
-    # After the -2*EPS end-cap correction in shared_edge_length, L should be
-    # close to the true 10 m. Residual error is sub-millimetre for this clean
-    # rectangular case; EPS*2 = 0.1 m tolerance is very conservative.
-    assert abs(L - 10.0) < EPS * 2, f"Shared length {L:.4f} m, expected ~10 m"
+    L_for_i, L_for_j = list(shared.values())[0]
+    # For symmetric rectangular buildings (la = lb), L_for_i = L_for_j.
+    # After the -2*EPS end-cap correction both should be close to the true 10 m.
+    assert abs(L_for_i - 10.0) < EPS * 2, f"L_for_i = {L_for_i:.4f} m, expected ~10 m"
+    assert abs(L_for_j - 10.0) < EPS * 2, f"L_for_j = {L_for_j:.4f} m, expected ~10 m"
 
     result = compute_exposed_area(gdf, shared)
 
-    # Expected deductions use the measured L (not 100 exactly) because the
-    # ~0.1 m length bias propagates into the deduction value.
-    ded_expected = L * 10.0   # clip(min(10,10) - 0, 0, 10) = 10
-    assert abs(result.loc[0, "wall_deduction"] - ded_expected) < 1.0, \
-        f"ded_i = {result.loc[0, 'wall_deduction']:.2f}, expected {ded_expected:.2f}"
-    assert abs(result.loc[1, "wall_deduction"] - ded_expected) < 1.0, \
-        f"ded_j = {result.loc[1, 'wall_deduction']:.2f}, expected {ded_expected:.2f}"
+    # Building 0 is left_idx (i), building 1 is right_idx (j), so building 0
+    # uses L_for_i and building 1 uses L_for_j. Both are ~10 m here.
+    ded_expected_i = L_for_i * 10.0   # clip(min(10,10) - 0, 0, 10) = 10
+    ded_expected_j = L_for_j * 10.0
+    assert abs(result.loc[0, "wall_deduction"] - ded_expected_i) < 1.0, \
+        f"ded_i = {result.loc[0, 'wall_deduction']:.2f}, expected {ded_expected_i:.2f}"
+    assert abs(result.loc[1, "wall_deduction"] - ded_expected_j) < 1.0, \
+        f"ded_j = {result.loc[1, 'wall_deduction']:.2f}, expected {ded_expected_j:.2f}"
 
-    # Total exposed: 2 * (roof + exposed wall) = 2 * (100 + (400 - L*10))
-    # = 2 * (100 + 400 - L*10).  With L=10.1: 2*(500-101)=798, within 5 m².
+    # Total exposed: 2*(roof + wall). With L_for_i = L_for_j ≈ 10 m each building
+    # loses L*10 from its 400 m² naive wall; total ≈ 2*(100 + 300) = 800 m².
     total = result["exposed_area"].sum()
     assert abs(total - 800.0) < 10.0, \
         f"Total exposed = {total:.1f} m², expected ~800 (within 10)"
@@ -413,25 +425,26 @@ def test_b_slope():
 
     shared, _ = find_shared_pairs(gdf)
     assert len(shared) == 1, f"Expected 1 shared pair, got {len(shared)}"
-    L = list(shared.values())[0]
+    L_for_i, L_for_j = list(shared.values())[0]
+    # For side-by-side rectangles la = lb, so L_for_i = L_for_j ≈ 10 m.
 
     result = compute_exposed_area(gdf, shared)
 
-    # ded_i = L * 10 (building i's entire wall height is hidden)
-    ded_i_expected = L * 10.0
+    # ded_i = L_for_i * 10 (building i's entire wall height is hidden)
+    ded_i_expected = L_for_i * 10.0
     assert abs(result.loc[0, "wall_deduction"] - ded_i_expected) < 1.0, \
         (f"ded_i = {result.loc[0, 'wall_deduction']:.2f}, "
-         f"expected {ded_i_expected:.2f} (L*10)")
+         f"expected {ded_i_expected:.2f} (L_for_i*10)")
 
-    # ded_j = L * 5 (hidden from base_j=5 up to min_top=10, height=5)
-    ded_j_expected = L * 5.0
+    # ded_j = L_for_j * 5 (hidden from base_j=5 up to min_top=10, interval=5)
+    ded_j_expected = L_for_j * 5.0
     assert abs(result.loc[1, "wall_deduction"] - ded_j_expected) < 1.0, \
         (f"ded_j = {result.loc[1, 'wall_deduction']:.2f}, "
-         f"expected {ded_j_expected:.2f} (L*5)")
+         f"expected {ded_j_expected:.2f} (L_for_j*5)")
 
     # exposed wall contribution along the shared segment only
-    naive_i_seg = L * 10.0
-    naive_j_seg = L * 8.0
+    naive_i_seg = L_for_i * 10.0
+    naive_j_seg = L_for_j * 8.0
     exposed_i_seg = naive_i_seg - ded_i_expected   # should be ~0
     exposed_j_seg = naive_j_seg - ded_j_expected   # should be ~30
 
@@ -585,20 +598,61 @@ def test_f_height_repair():
     shared, _ = find_shared_pairs(gdf)
     result = compute_exposed_area(gdf, shared)
 
-    L = list(shared.values())[0] if shared else 10.0
+    L_for_i, L_for_j = list(shared.values())[0] if shared else (10.0, 10.0)
+    # For side-by-side rectangles la = lb, so L_for_i = L_for_j ≈ 10 m.
 
-    # ded_j = L * clip(min(13,10) - 0, 0, 10) = L * 10
-    ded_j_expected = L * 10.0
+    # ded_j = L_for_j * clip(min(13,10) - 0, 0, 10) = L_for_j * 10
+    ded_j_expected = L_for_j * 10.0
     assert abs(result.loc[1, "wall_deduction"] - ded_j_expected) < 1.0, \
         (f"ded_j = {result.loc[1, 'wall_deduction']:.2f}, "
          f"expected {ded_j_expected:.2f} (was the repaired Alc_Top used?)")
 
-    # ded_i = L * clip(min(13,10) - 10, 0, 3) = L * 0 = 0
+    # ded_i = L_for_i * clip(min(13,10) - 10, 0, 3) = L_for_i * 0 = 0
     # building i sits entirely above building j's roof: no hidden wall
     assert abs(result.loc[0, "wall_deduction"]) < 1.0, \
         f"ded_i = {result.loc[0, 'wall_deduction']:.2f}, expected ~0"
 
     print("  PASS  Test F: degenerate height repair")
+
+
+def test_g_compactness_filter():
+    """
+    Test G: Compactness filter.
+
+    A needle-sliver that passes the area threshold (area > AREA_FLOOR = 1 m²)
+    but has a degenerate isoperimetric quotient (Q < COMPACTNESS_FLOOR = 0.02)
+    must be removed by the compactness filter.
+
+    Sliver: a 0.01 m × 200 m strip.
+        area        = 2.0 m²            (above AREA_FLOOR: passes area filter)
+        perimeter  ≈ 400.02 m
+        Q = 4π × 2 / 400.02² ≈ 1.57e-4   (well below COMPACTNESS_FLOOR)
+
+    Normal building: a 10 m × 10 m square.
+        Q = 4π × 100 / 40² ≈ 0.785       (well above threshold)
+
+    After the compactness filter only the square should remain.
+    """
+    gdf = build_gdf(
+        make_building(0,  0, 10,   10,   alc_base=0, alc_top=10),  # normal square
+        make_building(20, 0, 20.01, 200, alc_base=0, alc_top=10),  # needle sliver
+    )
+
+    compact = 4.0 * np.pi * gdf["footprint_area"] / gdf.geometry.length ** 2
+
+    assert compact.iloc[0] >= COMPACTNESS_FLOOR, \
+        f"Normal building compactness {compact.iloc[0]:.3f} should be >= {COMPACTNESS_FLOOR}"
+    assert compact.iloc[1] < COMPACTNESS_FLOOR, \
+        f"Sliver compactness {compact.iloc[1]:.2e} should be < {COMPACTNESS_FLOOR}"
+
+    gdf_filtered = gdf[compact >= COMPACTNESS_FLOOR].reset_index(drop=True)
+
+    assert len(gdf_filtered) == 1, \
+        f"Expected 1 building after compactness filter, got {len(gdf_filtered)}"
+    assert abs(gdf_filtered.iloc[0]["footprint_area"] - 100.0) < 0.01, \
+        f"Retained building footprint = {gdf_filtered.iloc[0]['footprint_area']:.2f} m², expected 100"
+
+    print("  PASS  Test G: compactness filter drops needle-sliver with normal area")
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +670,7 @@ def main():
         ("D", "partial overlap audit",            test_d_partial_overlap),
         ("E", "tile-edge halo (N/A)",             None),
         ("F", "degenerate height repair",         test_f_height_repair),
+        ("G", "compactness filter",               test_g_compactness_filter),
     ]
 
     passed = failed = skipped = 0

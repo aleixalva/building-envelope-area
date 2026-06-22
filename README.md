@@ -77,20 +77,23 @@ contained within another (ICC digitising errors) are also dropped.
 ### 3. Shared-wall detection
 
 A Shapely 2.0 `STRtree` is queried in bulk with all buffered geometries at
-once (vectorised, no Python loop). For each candidate pair the shared
-plan-length is measured as the average of two boundary-intersection lengths,
-with an end-cap correction of -2*EPS to remove the systematic bias introduced
-by the buffer circles at segment endpoints:
+once (vectorised, no Python loop). For each candidate pair, two boundary-
+intersection lengths are measured and corrected for buffer end-cap bias:
 
 ```
 la = length( boundary(j) ∩ buffer(i, EPS) )
 lb = length( boundary(i) ∩ buffer(j, EPS) )
-shared_length = max( 0,  0.5 * (la + lb) - 2 * EPS )
+L_for_i = max( 0, lb - 2*EPS )   [used for building i's deduction]
+L_for_j = max( 0, la - 2*EPS )   [used for building j's deduction]
 ```
 
-This is robust to the half-perimeter problem of the original approach, which
-broke when two footprints genuinely overlapped in 2-D (a digitising error).
-Genuine 2-D overlaps are flagged in `output/overlap_audit.csv` for review.
+The two lengths are kept separate (asymmetric) rather than averaged. For a
+symmetric straight-wall pair (`la = lb`) the result is identical to averaging.
+For a concave-wrapping pair (a U-shaped building enclosing a smaller one),
+`la != lb`; using each measurement directly for its own building prevents the
+inflation in the enclosed building's deduction that averaging would cause.
+Genuine 2-D footprint overlaps are flagged in `output/overlap_audit.csv` for
+review.
 
 ### 4. Deduction and exposed area
 

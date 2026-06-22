@@ -141,7 +141,33 @@ a detectable secondary peak, so the fallback is triggered. The fallback value
 of 1.0 m² is a safe choice: the 25th percentile of real building areas in the
 test tile is ~7 m², so the fallback does not remove any real buildings.
 
-### 4b. Containment removal
+### 4b. Compactness filter
+
+The area threshold in Section 4a catches tiny-area slivers, but some artefacts
+have area above `AREA_FLOOR` paired with a perimeter that is an order of
+magnitude too long for their footprint. These are thin needle-strip polygons
+left over from polygon boundary operations: a few square metres of area but tens
+of metres of perimeter. They pass the area filter but produce unrealistically
+large `wall_area_naive` values and accumulate shared-wall deductions that corrupt
+their neighbourhood.
+
+The isoperimetric quotient (also called the compactness) measures the ratio of
+area to the square of the perimeter:
+
+```
+Q = 4π · area / perimeter²
+```
+
+`Q = 1.0` for a circle (the most compact shape possible); `Q ≈ 0.785` for a
+square; `Q → 0` for a thin strip. Buildings with `Q < COMPACTNESS_FLOOR = 0.02`
+are dropped. This corresponds to a strip roughly 50 times longer than it is
+wide, a shape that cannot be a real building.
+
+The compactness filter is applied after the area filter and before the
+containment filter, so that degenerate geometries do not corrupt the spatial
+index queries used in later steps.
+
+### 4c. Containment removal
 
 After sliver removal, some building pairs remain where one footprint lies almost
 entirely inside the other. This is a digitising error in the ICC data: a
@@ -204,20 +230,24 @@ ICC dataset without picking up buildings separated by a real alley.
 
 ### 6c. Shared-edge length measurement
 
-For each candidate pair (i, j), the shared plan-length is measured as the
-average of two boundary-intersection lengths:
+For each candidate pair (i, j), two boundary-intersection lengths are measured:
 
 ```
 la = length( boundary(j) ∩ buffer(i, EPS) )
 lb = length( boundary(i) ∩ buffer(j, EPS) )
-shared_length = max( 0,  0.5 * (la + lb) - 2 * EPS )
 ```
 
 `la` is the length of building j's boundary that falls inside the EPS-expanded
-polygon of building i. For a clean shared edge, this captures the shared
-segment itself. Averaging with `lb` (the symmetric measurement from building
-i's perspective) was intended to cancel end-cap bias, but does not fully do so
-(see Section 6d below).
+polygon of building i: the direct measurement of how much of j's wall faces i.
+`lb` is the symmetric measurement from i's perspective: how much of i's wall
+faces j.
+
+These two values are kept separate (asymmetric) rather than averaged, and each
+is applied to the building it directly measures (see Section 6d). For a
+symmetric straight-wall pair (`la = lb`) this makes no difference. For a
+concave-wrapping pair (a U-shaped or C-shaped building that encloses a smaller
+building on multiple sides), `la != lb` and using each measurement directly
+gives the correct per-building deduction (see Section 6e).
 
 This formula replaces the old approach of intersecting the two buffered
 polygons and halving the perimeter of the resulting sliver. That approach
@@ -236,14 +266,12 @@ correct.
 The buffer end-caps introduce a systematic positive bias in both `la` and `lb`.
 At each endpoint of a shared segment, the buffer circle of building i overhangs
 the corner and captures approximately EPS of the adjacent (non-shared) wall of
-building j. Both `la` and `lb` carry this same bias (the corner is shared by
-both buildings), so averaging does not cancel it. The total bias per pair is
-approximately 2*EPS (one EPS per endpoint, two endpoints per segment).
-
-Subtracting 2*EPS restores the true edge length:
+building j. Each measurement carries this same bias at both endpoints (two EPS
+per measurement). Subtracting 2*EPS from each restores the true edge length:
 
 ```
-shared_length = max( 0,  0.5 * (la + lb) - 2 * EPS )
+L_for_i = max( 0,  lb - 2 * EPS )
+L_for_j = max( 0,  la - 2 * EPS )
 ```
 
 This correction was confirmed empirically on the test suite: a 10 m test edge
@@ -254,14 +282,38 @@ at building corners, where each endpoint contributes ~EPS of end-cap arc. At a
 T-junction (where one building's wall ends mid-segment of the other), one
 endpoint contributes ~EPS but the other contributes ~0, so the correction
 over-subtracts by ~EPS for that pair. T-junctions are common in dense
-Barcelona block fabric. However, the systematic positive bias (which, without
-the correction, pushes 12.6 % of buildings into the wall-area clip-to-zero
-trap) is a larger and more predictable error than the occasional T-junction
-under-correction, so the correction is applied.
+Barcelona block fabric. This under-correction is accepted as the smaller error.
 
 Very short walls (shorter than 2*EPS = 0.10 m) are zeroed by the `max(0,...)`
 clamp. A 10 cm shared wall contributes negligible area and is considered a
 point contact.
+
+### 6e. Asymmetric deduction lengths
+
+`L_for_i` and `L_for_j` play different roles in the deduction step (Section 7):
+
+- `L_for_i` (from lb): the length of building i's boundary facing building j.
+  This is used for building i's deduction; it measures i's hidden wall directly.
+- `L_for_j` (from la): the length of building j's boundary facing building i.
+  This is used for building j's deduction; it measures j's hidden wall directly.
+
+For a symmetric straight-wall pair the two values are equal and the result is
+the same as the old averaged formula. The asymmetric split matters for
+concave-wrapping pairs, the most important case being a U-shaped building j
+that encloses a small rectangular building i on three sides:
+
+- `la = boundary(j) ∩ buffer(i, EPS)` captures j's entire concave inner wall
+  adjacent to i. If j wraps around i on three sides, la can be substantially
+  longer than i's own perimeter.
+- `lb = boundary(i) ∩ buffer(j, EPS)` captures only i's outer wall that
+  actually faces j, which cannot exceed i's perimeter.
+
+The old averaged formula `0.5*(la+lb)` inflated the shared length above either
+measurement, causing deductions that exceed i's naive wall area (over-deduction
+fraction above 1.0). Using `L_for_j = la - 2*EPS` for j's deduction and
+`L_for_i = lb - 2*EPS` for i's deduction gives the physically correct answer:
+i's hidden wall is measured from i's perspective (lb), and j's hidden wall is
+measured from j's perspective (la).
 
 ---
 
@@ -279,13 +331,16 @@ Shapely), including interior rings for buildings with courtyards. `height` is
 
 ### 7b. The elevation-interval deduction formula
 
-For a shared segment of plan-length L between buildings i and j, the
-deductions are asymmetric:
+For a shared pair of buildings i and j, the deductions use the asymmetric
+plan-lengths from Section 6e:
 
 ```
-ded_i = L * clip( min(Alc_Top_i, Alc_Top_j) - Alc_Base_i,  0,  h_i )
-ded_j = L * clip( min(Alc_Top_i, Alc_Top_j) - Alc_Base_j,  0,  h_j )
+ded_i = L_for_i * clip( min(Alc_Top_i, Alc_Top_j) - Alc_Base_i,  0,  h_i )
+ded_j = L_for_j * clip( min(Alc_Top_i, Alc_Top_j) - Alc_Base_j,  0,  h_j )
 ```
+
+Both the plan-length factor (`L_for_i` vs `L_for_j`) and the elevation-interval
+factor are asymmetric: each is computed from building i's or j's own geometry.
 
 The physical reasoning:
 
@@ -350,20 +405,20 @@ This can happen because:
 
 1. Buffer end-cap residual (the -2*EPS correction reduces but does not
    eliminate this for T-junctions and buildings with many neighbours).
-2. The 58 genuine 2-D overlap pairs flagged in the overlap audit, whose
-   shared lengths are inflated by the boundary-of-blob effect.
+2. Genuine 2-D overlap pairs flagged in the overlap audit, whose shared lengths
+   are inflated by the boundary-of-blob effect.
 3. Cumulative accumulation in buildings that are surrounded on all sides by
    taller neighbours: each neighbour contributes a valid partial deduction, and
    the sum can legitimately exceed the naive wall area for very small buildings
-   in dense blocks.
+   in dense blocks. The asymmetric deduction formula (Section 6e) eliminates
+   the most extreme cases of this kind (concave-wrapping pairs), but cumulative
+   accumulation from many independent neighbours can still occur.
 
 The clip to zero (`wall_area = max(0, wall_area_naive - wall_deduction)`) is
 the safety net. For a building with no truly exposed wall (fully embedded in a
 block), the correct physical answer is wall_area = 0, and the clip achieves
-this. For buildings where the over-deduction is a measurement artefact rather
-than a physical truth, the clip is a slight over-correction, but the error is
-small: after the -2*EPS correction, the maximum over-deduction in the test
-tile is 4.9 % of buildings, with a maximum raw fraction of 1.049.
+this. For buildings where the over-deduction is a measurement artefact, the
+clip is a slight over-correction, but the error is small in aggregate.
 
 ---
 
@@ -378,6 +433,7 @@ they can be audited and adjusted in one place.
 | `H_FLOOR` | 3.0 m | Minimum height assigned to buildings with `Alc_Top <= Alc_Base` |
 | `AREA_FLOOR` | 1.0 m² | Fixed area threshold used as KDE fallback |
 | `THRESHOLD_BOUNDS` | (1e-3, 3.0) m² | Sane range for the KDE valley threshold |
+| `COMPACTNESS_FLOOR` | 0.02 | Minimum isoperimetric quotient (4π·area / perimeter²) to retain a building |
 | `CONTAINMENT_FRAC` | 0.9 | Fraction of smaller footprint that triggers containment removal |
 | `OVERLAP_AUDIT_AREA` | 0.5 m² | Minimum 2-D overlap area to flag in the audit CSV |
 
@@ -414,6 +470,13 @@ corner-to-corner shared walls but slightly over-corrects for T-junctions (see
 Section 6d). A more exact correction would require detecting the type of each
 endpoint, which is geometrically expensive and not implemented.
 
+**Cumulative over-deduction.** Buildings tightly enclosed by many neighbours
+can accumulate deductions that exceed their naive wall area even with the
+asymmetric formula, because each of several independent neighbours contributes a
+valid partial deduction. The clip to zero is the correct physical answer for a
+fully embedded building; for partially embedded ones it is a slight
+over-correction. The fraction of affected buildings is small.
+
 **Flat-roof assumption.** The pipeline uses `roof_area = footprint_area` (LoD1
 flat-roof model). Pitched roofs, mansard roofs, and setbacks are not modelled.
 
@@ -422,10 +485,10 @@ treated as buried against soil and excluded from the exposed area. The
 ground-contact surface (relevant for ground-source heat exchange) is not
 computed.
 
-**Genuine 2-D overlaps.** The 58 overlap pairs in the test tile (and a
-proportional number in the full dataset) have slightly inflated shared lengths
-that the correction does not fully fix. Their effect on total area is small but
-non-zero; they are flagged in `overlap_audit.csv` for manual review.
+**Genuine 2-D overlaps.** Partial 2-D footprint overlaps (ICC digitising
+errors) produce slightly inflated shared lengths that the formula does not fully
+correct. Their effect on total area is small but non-zero; they are flagged in
+`overlap_audit.csv` for manual review.
 
 **KDE fallback on small tiles.** The KDE valley-detection relies on a
 bimodal distribution in log10-area space. On small tiles where the sliver
