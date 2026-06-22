@@ -123,8 +123,7 @@ For full technical details, design decisions, and known limitations see
 
 ## Setup
 
-All commands below are meant to be typed into a terminal (the Terminal app on
-macOS or Linux; on Windows, use Windows Subsystem for Linux).
+All commands below are meant to be typed into a terminal.
 
 ### Step 1 — Install uv
 
