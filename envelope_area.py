@@ -27,7 +27,7 @@ Pipeline steps:
 Usage:
     python envelope_area.py [--input FILE] [--output DIR]
 
-    --input  FILE   GeoPackage to process (default: data/EdificiosAMB.gpkg)
+    --input  FILE   GeoPackage to process (default: data/buildings.gpkg)
     --output DIR    Directory for all output files  (default: output/)
 
 Output files written to DIR/:
@@ -107,7 +107,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     "--input", "-i",
-    default="data/EdificiosAMB.gpkg",
+    default="data/buildings.gpkg",
     metavar="FILE",
     help="Input GeoPackage file.",
 )

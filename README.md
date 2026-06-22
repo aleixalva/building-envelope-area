@@ -141,7 +141,7 @@ pip install geopandas shapely numpy scipy pandas
 Place the ICC building GeoPackage at:
 
 ```
-data/EdificiosAMB.gpkg
+data/buildings.gpkg
 ```
 
 The file is not included in this repository (571 MB). It can be obtained from
@@ -155,12 +155,12 @@ the ICC download service. The `data/` directory is listed in `.gitignore`.
 python envelope_area.py [--input FILE] [--output DIR]
 ```
 
-Default input: `data/EdificiosAMB.gpkg`. Default output: `output/`.
+Default input: `data/buildings.gpkg`. Default output: `output/`.
 
 Run with explicit paths:
 
 ```bash
-python envelope_area.py --input /path/to/EdificiosAMB.gpkg --output /path/to/results/
+python envelope_area.py --input /path/to/buildings.gpkg --output /path/to/results/
 ```
 
 Results are written to `<output>/buildings_exposed.gpkg`. A summary report is
