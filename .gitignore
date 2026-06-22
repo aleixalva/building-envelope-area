@@ -1,0 +1,17 @@
+# Input data (large GeoPackage, not tracked in git)
+data/
+
+# Pipeline output
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Marimo cache
+.marimo/
+
+# OS
+.DS_Store
