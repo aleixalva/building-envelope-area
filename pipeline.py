@@ -22,16 +22,21 @@ Pipeline steps:
        footprint-area distribution.
     4. Detect shared wall segments between all neighbouring building pairs.
     5. Compute exposed wall and roof area per building.
-    6. Save results to output/buildings_exposed.gpkg.
+    6. Save results and write a summary report.
 
 Usage:
-    python pipeline.py
+    python pipeline.py [--input FILE] [--output DIR]
 
-Input:  data/EdificiosAMB.gpkg
-Output: output/buildings_exposed.gpkg
-        output/overlap_audit.csv  (only written when flagged pairs exist)
+    --input  FILE   GeoPackage to process (default: data/EdificiosAMB.gpkg)
+    --output DIR    Directory for all output files  (default: output/)
+
+Output files written to DIR/:
+    buildings_exposed.gpkg   per-building exposed area (GeoPackage)
+    overlap_audit.csv        pairs with genuine 2-D footprint overlap (if any)
+    report.txt               summary statistics (also printed to stdout)
 """
 
+import argparse
 import os
 import time
 
@@ -87,9 +92,40 @@ CONTAINMENT_FRAC = 0.9
 
 OVERLAP_AUDIT_AREA = 0.5
 # m²: genuine 2-D footprint overlaps larger than this are flagged in the
-# overlap audit and written to output/overlap_audit.csv. They indicate ICC
+# overlap audit and written to <output>/overlap_audit.csv. They indicate ICC
 # digitising errors (partial overlaps that are not full containment). The pair
 # is kept in the dataset but marked so the operator can quantify their impact.
+
+
+# ---------------------------------------------------------------------------
+# Command-line arguments
+# ---------------------------------------------------------------------------
+
+parser = argparse.ArgumentParser(
+    description="Compute exposed surface area of buildings from ICC LoD1 data.",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+)
+parser.add_argument(
+    "--input", "-i",
+    default="data/EdificiosAMB.gpkg",
+    metavar="FILE",
+    help="Input GeoPackage file.",
+)
+parser.add_argument(
+    "--output", "-o",
+    default="output",
+    metavar="DIR",
+    help="Output directory (created if it does not exist).",
+)
+args = parser.parse_args()
+
+INPUT_FILE = args.input
+OUTPUT_DIR = args.output
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print(f"Input:  {INPUT_FILE}")
+print(f"Output: {OUTPUT_DIR}/")
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +149,9 @@ OVERLAP_AUDIT_AREA = 0.5
 # Geometry type: MULTIPOLYGON Z (3D), where Z encodes the roof elevation.
 # The Z coordinate is redundant with Alc_Top and is stripped in the next step.
 
-gdf_raw = gpd.read_file("data/EdificiosAMB.gpkg")
-print(gdf_raw.shape, gdf_raw.crs)
+gdf_raw = gpd.read_file(INPUT_FILE)
+n_raw = len(gdf_raw)
+print(f"\nLoaded {n_raw:,} buildings  |  CRS: {gdf_raw.crs}")
 print(gdf_raw.dtypes)
 
 
@@ -163,8 +200,8 @@ gdf_fixed["geometry"] = make_valid(force_2d(gdf_raw.geometry))
 gdf_fixed["Alc_Top"]  = pd.to_numeric(gdf_fixed["Alc_Top"],  errors="coerce")
 gdf_fixed["Alc_Base"] = pd.to_numeric(gdf_fixed["Alc_Base"], errors="coerce")
 
-n_nan_top  = gdf_fixed["Alc_Top"].isna().sum()
-n_nan_base = gdf_fixed["Alc_Base"].isna().sum()
+n_nan_top  = int(gdf_fixed["Alc_Top"].isna().sum())
+n_nan_base = int(gdf_fixed["Alc_Base"].isna().sum())
 if n_nan_top or n_nan_base:
     print(f"WARNING: {n_nan_top} rows with non-numeric Alc_Top, "
           f"{n_nan_base} with non-numeric Alc_Base -- dropping these rows")
@@ -228,7 +265,7 @@ print(gdf_fixed[["height", "footprint_area"]].describe())
 # AREA_FLOOR = 1.0 m² if it fails or lands outside the sane window.
 
 pos_mask = gdf_fixed["footprint_area"] > 0
-n_zero = (~pos_mask).sum()
+n_zero   = int((~pos_mask).sum())
 if n_zero > 0:
     print(f"Dropping {n_zero} buildings with non-positive footprint area "
           "(make_valid artefacts -- log10(0) is undefined)")
@@ -236,6 +273,7 @@ gdf_pos = gdf_fixed[pos_mask].copy()
 
 log_areas = np.log10(gdf_pos["footprint_area"].values)
 
+kde_used_fallback = False
 try:
     kde_coarse = gaussian_kde(log_areas, bw_method=0.30)
     x_grid   = np.linspace(log_areas.min(), log_areas.max(), 2000)
@@ -256,13 +294,15 @@ try:
         print(f"KDE valley {threshold_area:.4g} m² outside bounds "
               f"{THRESHOLD_BOUNDS} -- using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
         threshold_area = AREA_FLOOR
+        kde_used_fallback = True
 
 except Exception as e:
     print(f"KDE failed ({e}) -- using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
     threshold_area = AREA_FLOOR
+    kde_used_fallback = True
 
-print(f"Threshold applied: {threshold_area:.4f} m²  "
-      f"(artefacts to drop: {(gdf_pos['footprint_area'] < threshold_area).sum()})")
+n_slivers = int((gdf_pos["footprint_area"] < threshold_area).sum())
+print(f"Threshold applied: {threshold_area:.4f} m²  (artefacts to drop: {n_slivers})")
 
 # Filter out artefact geometries below the threshold.
 #
@@ -310,9 +350,11 @@ for _bi, _geom_bi in enumerate(gdf_clean.geometry):
                 else _bj
             )
 
+n_contained = len(_to_drop)
 gdf_clean = gdf_clean.drop(index=_to_drop).reset_index(drop=True)
-print(f"Buildings retained after artefact + containment removal: {len(gdf_clean)} "
-      f"(dropped {len(_to_drop)} contained)")
+n_buildings = len(gdf_clean)
+print(f"Buildings retained after artefact + containment removal: {n_buildings:,} "
+      f"(dropped {n_contained} contained)")
 
 
 # ---------------------------------------------------------------------------
@@ -346,18 +388,19 @@ for _bi, _geom_bi in enumerate(gdf_clean.geometry):
                 and _overlap.area > OVERLAP_AUDIT_AREA):
             overlapping_pairs.append((_bi, _bj, _overlap.area))
 
+n_overlap_pairs = len(overlapping_pairs)
 if overlapping_pairs:
     _ov_areas = np.array([a for _, _, a in overlapping_pairs])
     print(f"Genuinely overlapping pairs (area > {OVERLAP_AUDIT_AREA} m²): "
-          f"{len(overlapping_pairs)}")
+          f"{n_overlap_pairs}")
     print(f"  min:    {_ov_areas.min():.4f} m²")
     print(f"  median: {np.median(_ov_areas):.4f} m²")
     print(f"  max:    {_ov_areas.max():.4f} m²")
-    os.makedirs("output", exist_ok=True)
+    overlap_audit_path = os.path.join(OUTPUT_DIR, "overlap_audit.csv")
     pd.DataFrame(overlapping_pairs,
                  columns=["idx_i", "idx_j", "overlap_area_m2"]
-                 ).to_csv("output/overlap_audit.csv", index=False)
-    print("  Written to output/overlap_audit.csv for review.")
+                 ).to_csv(overlap_audit_path, index=False)
+    print(f"  Written to {overlap_audit_path} for review.")
 else:
     print("No genuine 2-D footprint overlaps found (good).")
 
@@ -436,7 +479,8 @@ mask      = left_idx < right_idx   # keep canonical pairs i < j only
 left_idx  = left_idx[mask]
 right_idx = right_idx[mask]
 
-print(f"Candidate neighbour pairs after spatial filtering: {len(left_idx):,}")
+n_candidate_pairs = len(left_idx)
+print(f"Candidate neighbour pairs after spatial filtering: {n_candidate_pairs:,}")
 
 bounds_j = shapely.boundary(geoms[right_idx])
 la = shapely.length(shapely.intersection(bounds_j, bufs[left_idx]))
@@ -457,9 +501,12 @@ left_idx       = left_idx[valid]
 right_idx      = right_idx[valid]
 shared_lengths = shared_lengths[valid]
 
+n_shared_pairs      = len(left_idx)
+total_shared_length = float(shared_lengths.sum())
+
 elapsed_shared = time.time() - t0_shared
-print(f"Shared wall pairs found: {len(left_idx):,}")
-print(f"Total shared boundary length: {shared_lengths.sum():.1f} m")
+print(f"Shared wall pairs found: {n_shared_pairs:,}")
+print(f"Total shared boundary length: {total_shared_length:.1f} m")
 print(f"Shared-wall detection elapsed: {elapsed_shared:.1f} s  "
       f"({elapsed_shared/60:.1f} min)")
 
@@ -562,9 +609,9 @@ naive = gdf_clean["wall_area_naive"].values
 with np.errstate(divide="ignore", invalid="ignore"):
     ded_frac_raw = np.where(naive > 0, wall_deduction / naive, 0.0)
 
-n_over = int((ded_frac_raw > 1.0).sum())
-if n_over > 0:
-    print(f"WARNING: {n_over} buildings have wall_deduction > wall_area_naive "
+n_over_deducted = int((ded_frac_raw > 1.0).sum())
+if n_over_deducted > 0:
+    print(f"WARNING: {n_over_deducted} buildings have wall_deduction > wall_area_naive "
           f"before clip (deduction_fraction_raw > 1.0). "
           f"Max fraction: {ded_frac_raw.max():.3f}. "
           "Possible causes: inflated shared lengths from 2-D overlap pairs, "
@@ -584,13 +631,14 @@ gdf_clean["deduction_fraction"] = (
 ).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(upper=1.0)
 
 elapsed_area = time.time() - t0_area
-print("\nExposed area stats (m²):")
-print(gdf_clean["exposed_area"].describe())
-print(f"\nTotal exposed area:    {gdf_clean['exposed_area'].sum():>15,.0f} m²")
-print(f"Total naive wall area: {gdf_clean['wall_area_naive'].sum():>15,.0f} m²")
-print(f"Total wall deduction:  {gdf_clean['wall_deduction'].sum():>15,.0f} m²")
-print(f"Total roof area:       {gdf_clean['roof_area'].sum():>15,.0f} m²")
-print(f"Area computation elapsed: {elapsed_area:.1f} s")
+elapsed_total = time.time() - START_TIME
+
+# totals used in the report
+total_roof       = float(gdf_clean["roof_area"].sum())
+total_naive_wall = float(gdf_clean["wall_area_naive"].sum())
+total_deduction  = float(gdf_clean["wall_deduction"].sum())
+total_wall       = float(gdf_clean["wall_area"].sum())
+total_exposed    = float(gdf_clean["exposed_area"].sum())
 
 
 # ---------------------------------------------------------------------------
@@ -606,10 +654,71 @@ cols_to_save = [
     "geometry",
 ]
 
-os.makedirs("output", exist_ok=True)
-gdf_clean[cols_to_save].to_file("output/buildings_exposed.gpkg", driver="GPKG")
-print(f"Saved {len(gdf_clean)} buildings to output/buildings_exposed.gpkg")
+gpkg_path = os.path.join(OUTPUT_DIR, "buildings_exposed.gpkg")
+gdf_clean[cols_to_save].to_file(gpkg_path, driver="GPKG")
+print(f"Saved {n_buildings:,} buildings to {gpkg_path}")
 
-elapsed_total = time.time() - START_TIME
-print(f"\nTotal elapsed: {elapsed_total:.1f} s  "
-      f"({elapsed_total/60:.1f} min  /  {elapsed_total/3600:.2f} h)")
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+# Build the report as a list of lines so it can be both printed and written
+# to a file with a single formatting pass.
+
+import datetime
+
+report_lines = [
+    "=" * 60,
+    "  Exposed Surface Area Report",
+    "=" * 60,
+    f"  Generated : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    f"  Input     : {INPUT_FILE}",
+    f"  Output    : {OUTPUT_DIR}/",
+    "",
+    "--- Dataset ---",
+    f"  Raw buildings loaded        : {n_raw:>10,}",
+    f"  Non-numeric Alc_Top         : {n_nan_top:>10,}",
+    f"  Non-numeric Alc_Base        : {n_nan_base:>10,}",
+    f"  Elevation pairs repaired    : {n_repaired:>10,}",
+    f"  Zero-area footprints        : {n_zero:>10,}",
+    f"  Sliver threshold            : {threshold_area:>10.4f} m²"
+    + ("  [KDE fallback]" if kde_used_fallback else "  [KDE]"),
+    f"  Slivers removed             : {n_slivers:>10,}",
+    f"  Contained buildings removed : {n_contained:>10,}",
+    f"  Buildings processed         : {n_buildings:>10,}",
+    "",
+    "--- Geometry issues ---",
+    f"  2-D overlap pairs flagged   : {n_overlap_pairs:>10,}"
+    + (f"  (see overlap_audit.csv)" if n_overlap_pairs else ""),
+    f"  Buildings over-deducted     : {n_over_deducted:>10,}"
+    + ("  (deduction_fraction_raw > 1)" if n_over_deducted else ""),
+    "",
+    "--- Shared walls ---",
+    f"  Candidate pairs             : {n_candidate_pairs:>10,}",
+    f"  Shared wall pairs           : {n_shared_pairs:>10,}",
+    f"  Total shared length         : {total_shared_length:>10,.1f} m",
+    "",
+    "--- Exposed area ---",
+    f"  Total roof area             : {total_roof:>14,.0f} m²",
+    f"  Total naive wall area       : {total_naive_wall:>14,.0f} m²",
+    f"  Total wall deduction        : {total_deduction:>14,.0f} m²",
+    f"  Total exposed wall area     : {total_wall:>14,.0f} m²",
+    f"  Total exposed area          : {total_exposed:>14,.0f} m²",
+    f"  Wall deduction fraction     : {total_deduction / total_naive_wall * 100:>9.1f} %",
+    "",
+    "--- Timing ---",
+    f"  Shared-wall detection       : {elapsed_shared:>10.1f} s",
+    f"  Area computation            : {elapsed_area:>10.1f} s",
+    f"  Total                       : {elapsed_total:>10.1f} s"
+    + f"  ({elapsed_total / 3600:.2f} h)",
+    "=" * 60,
+]
+
+report_text = "\n".join(report_lines)
+print("\n" + report_text)
+
+report_path = os.path.join(OUTPUT_DIR, "report.txt")
+with open(report_path, "w") as f:
+    f.write(report_text + "\n")
+print(f"\nReport written to {report_path}")
