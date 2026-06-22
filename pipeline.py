@@ -58,7 +58,7 @@ assert tuple(int(x) for x in shapely.__version__.split(".")[:2]) >= (2, 0), (
 START_TIME = time.time()
 
 # ---------------------------------------------------------------------------
-# Named constants -- all magic numbers live here so they are easy to audit
+# Named constants (all magic numbers live here so they are easy to audit)
 # ---------------------------------------------------------------------------
 
 EPS = 0.05
@@ -141,8 +141,8 @@ print(f"Output: {OUTPUT_DIR}/")
 # present in the same query.
 #
 # Columns of interest:
-#   Alc_Top:  string -- absolute elevation of the roof (metres above sea level)
-#   Alc_Base: string -- absolute elevation of the ground at the building base
+#   Alc_Top:  string, absolute elevation of the roof (metres above sea level)
+#   Alc_Base: string, absolute elevation of the ground at the building base
 #   Both are stored as strings in the original shapefile and are cast to float
 #   below. Non-numeric values are coerced to NaN and reported.
 #
@@ -159,7 +159,7 @@ print(gdf_raw.dtypes)
 # Geometry repair, elevation repair, and height computation
 # ---------------------------------------------------------------------------
 
-# STEP 1 -- strip Z and repair polygon topology
+# STEP 1: strip Z and repair polygon topology
 #   force_2d: removes the Z coordinate from MULTIPOLYGON Z geometries.
 #     The ICC extraction pipeline leaves degenerate rings (rings with fewer
 #     than 4 points, which cannot enclose area) as sub-polygons within
@@ -167,14 +167,14 @@ print(gdf_raw.dtypes)
 #   make_valid: discards those degenerate rings and keeps the real polygon.
 #     After force_2d this brings all geometries to valid status.
 #
-# STEP 2 -- cast elevation columns, guarding against non-numeric strings
+# STEP 2: cast elevation columns, guarding against non-numeric strings
 #   pd.to_numeric(..., errors='coerce') converts bad strings to NaN rather
 #   than raising, so one bad row does not abort the full batch. Any NaN
 #   elevations are reported and those rows are dropped before height
 #   computation, because NaN elevations produce NaN deductions that would
 #   silently corrupt neighbouring buildings.
 #
-# STEP 3 -- repair inconsistent (Alc_Top, Alc_Base) pairs
+# STEP 3: repair inconsistent (Alc_Top, Alc_Base) pairs
 #   A small fraction of buildings have Alc_Top <= Alc_Base due to lidar
 #   ground model errors (the interpolated base elevation is higher than the
 #   scanned roof elevation). The old code clamped height = clip(0) but left
@@ -192,7 +192,7 @@ print(gdf_raw.dtypes)
 #   H_FLOOR = 3.0 m is a conservative floor. Every repaired building is
 #   counted and logged; a high count signals a problematic dataset.
 #
-# STEP 4 -- derive height and footprint area AFTER all repairs
+# STEP 4: derive height and footprint area AFTER all repairs
 
 gdf_fixed = gdf_raw.copy()
 gdf_fixed["geometry"] = make_valid(force_2d(gdf_raw.geometry))
@@ -204,7 +204,7 @@ n_nan_top  = int(gdf_fixed["Alc_Top"].isna().sum())
 n_nan_base = int(gdf_fixed["Alc_Base"].isna().sum())
 if n_nan_top or n_nan_base:
     print(f"WARNING: {n_nan_top} rows with non-numeric Alc_Top, "
-          f"{n_nan_base} with non-numeric Alc_Base -- dropping these rows")
+          f"{n_nan_base} with non-numeric Alc_Base (dropping these rows)")
     gdf_fixed = gdf_fixed.dropna(subset=["Alc_Top", "Alc_Base"])
 
 bad_elev   = gdf_fixed["Alc_Top"] <= gdf_fixed["Alc_Base"]
@@ -226,7 +226,7 @@ print(gdf_fixed[["height", "footprint_area"]].describe())
 # Artefact sliver removal
 # ---------------------------------------------------------------------------
 
-# A sliver is a geometry artefact -- a polygon that is technically valid (it
+# A sliver is a geometry artefact: a polygon that is technically valid (it
 # has enough points to close a ring) but is so thin or small that it represents
 # no real physical object. Slivers arise from:
 #
@@ -254,7 +254,7 @@ print(gdf_fixed[["height", "footprint_area"]].describe())
 #   A KDE (kernel density estimate) fits a smooth continuous density to the
 #   log-area histogram. Unlike a histogram, a KDE is a smooth differentiable
 #   function, so finding its minimum between two peaks is a well-defined
-#   operation -- evaluate on a fine grid and call np.argmin. A histogram
+#   operation: evaluate on a fine grid and call np.argmin. A histogram
 #   minimum is sensitive to bin placement.
 #
 #   bw_method=0.30 is a deliberately coarse bandwidth: a fine bandwidth (e.g.
@@ -268,7 +268,7 @@ pos_mask = gdf_fixed["footprint_area"] > 0
 n_zero   = int((~pos_mask).sum())
 if n_zero > 0:
     print(f"Dropping {n_zero} buildings with non-positive footprint area "
-          "(make_valid artefacts -- log10(0) is undefined)")
+          "(make_valid artefacts: log10(0) is undefined)")
 gdf_pos = gdf_fixed[pos_mask].copy()
 
 log_areas = np.log10(gdf_pos["footprint_area"].values)
@@ -292,12 +292,12 @@ try:
               f"(main mode at 10^{main_peak:.2f} = {10**main_peak:.1f} m²)")
     else:
         print(f"KDE valley {threshold_area:.4g} m² outside bounds "
-              f"{THRESHOLD_BOUNDS} -- using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
+              f"{THRESHOLD_BOUNDS}, using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
         threshold_area = AREA_FLOOR
         kde_used_fallback = True
 
 except Exception as e:
-    print(f"KDE failed ({e}) -- using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
+    print(f"KDE failed ({e}), using fixed fallback AREA_FLOOR = {AREA_FLOOR} m²")
     threshold_area = AREA_FLOOR
     kde_used_fallback = True
 
@@ -369,8 +369,8 @@ print(f"Buildings retained after artefact + containment removal: {n_buildings:,}
 # so they are flagged here and written to a side file for operator review.
 #
 # The STRtree is built ONCE before the loop. The original pipeline rebuilt it
-# inside the loop -- O(n) tree constructions for n buildings, a severe
-# performance problem for 851k buildings.
+# inside the loop (O(n) tree constructions for n buildings, a severe
+# performance problem for 851k buildings).
 #
 # Flagged pairs are kept in the dataset: dropping them automatically would
 # silently change the building count without operator awareness.
@@ -416,7 +416,7 @@ else:
 #
 # SPATIAL INDEX (STRtree)
 #   A Sort-Tile-Recursive tree allows fast bounding-box queries. Without it,
-#   finding neighbours requires O(n²) comparisons (851k² ~ 7x10^11 --
+#   finding neighbours requires O(n²) comparisons (851k² ~ 7x10^11,
 #   infeasible). The index reduces this to O(n log n) by pre-filtering to
 #   geometries whose bounding boxes overlap the query geometry.
 #
@@ -426,7 +426,7 @@ else:
 #   spatial query. The buffer bridges gaps up to EPS and converts a shared
 #   edge (1-D, zero area) into a thin detectable strip.
 #
-# SHARED EDGE LENGTH -- BOUNDARY INTERSECTION METHOD
+# SHARED EDGE LENGTH: BOUNDARY INTERSECTION METHOD
 #   Old approach (removed): intersect the buffered geometries and halve the
 #   perimeter of the resulting sliver. This fails when two footprints genuinely
 #   overlap in 2-D (a data error): the sliver becomes a blob, and half its
@@ -442,7 +442,7 @@ else:
 #   For a clean shared edge this gives the true edge length, within ~EPS
 #   (the buffer end-caps add ~EPS at each corner; the average partially
 #   cancels this bias). For a genuine 2-D overlap it returns a length related
-#   to the outline -- still unreliable, but those pairs are already flagged.
+#   to the outline, still unreliable, but those pairs are already flagged.
 #
 #   boundary() includes interior rings (courtyard facades): this is correct
 #   because courtyard walls are genuinely exposed to outdoor air.
@@ -453,7 +453,7 @@ else:
 #   the per-building Python loop in the original pipeline. For 851k buildings
 #   this is the dominant speedup. After pair-finding, shapely.boundary(),
 #   shapely.intersection(), and shapely.length() all operate element-wise on
-#   numpy arrays of geometries -- the geometry work is done inside GEOS (C++).
+#   numpy arrays of geometries (the geometry work is done inside GEOS, C++).
 #
 # PAIR DEDUPLICATION
 #   The bulk query returns both (i,j) and (j,i) for every pair, plus (i,i).
@@ -534,21 +534,21 @@ print(f"Shared-wall detection elapsed: {elapsed_shared:.1f} s  "
 #   wall_area    = perimeter * height  minus  hidden wall area
 #   exposed_area = roof_area + wall_area
 #
-# CORRECT DEDUCTION FORMULA -- ELEVATION INTERVALS
+# CORRECT DEDUCTION FORMULA: ELEVATION INTERVALS
 #   The old formula subtracted L * min(h_i, h_j) from BOTH buildings, where
 #   h = Alc_Top - Alc_Base. This is only correct on flat ground (equal base
-#   elevations). On any slope -- much of Barcelona (Gracia, Sarria, Horta,
-#   the Collserola flank) -- adjacent buildings have different Alc_Base, and
+#   elevations). On sloped terrain (much of Barcelona: Gracia, Sarria, Horta,
+#   and the Collserola flank), adjacent buildings have different Alc_Base, and
 #   the old formula gives wrong results in both directions.
 #
 #   Correct physics for a shared segment of plan-length L:
 #     Building i's wall is exposed to outdoor air ONLY above the neighbour's
-#     roofline. Everything at or below the neighbour's roof is hidden -- either
+#     roofline. Everything at or below the neighbour's roof is hidden, either
 #     by the neighbour's body (above the neighbour's own base) or by the soil
 #     the neighbour is founded on (below the neighbour's base: a buried or
-#     retaining wall, NOT an air-exposed surface).
+#     retaining wall, not an air-exposed surface).
 #
-#     Deduction per shared segment (ASYMMETRIC -- different for each building):
+#     Deduction per shared segment (asymmetric, different for each building):
 #       ded_i = L * clip(min(top_i, top_j) - base_i, 0, h_i)
 #       ded_j = L * clip(min(top_i, top_j) - base_j, 0, h_j)
 #
@@ -563,7 +563,7 @@ print(f"Shared-wall detection elapsed: {elapsed_shared:.1f} s  "
 #     slightly inflated by the buffer end-cap bias.
 #
 #   MODELLING NOTE: walls below a higher neighbour's base elevation are treated
-#   as buried against soil -- correct for an outdoor-air exposure model.
+#   as buried against soil (correct for an outdoor-air exposure model).
 #   Ground-contact area (a different heat-transfer path) is NOT computed here.
 #
 # PRE-CLIP DEDUCTION AUDIT
@@ -590,7 +590,7 @@ height_arr = gdf_clean["height"].values
 
 gdf_clean["wall_area_naive"] = gdf_clean.geometry.length * height_arr
 # geometry.length is the perimeter of the 2-D footprint in metres.
-# For polygons-with-holes (courtyards) it includes interior rings --
+# For polygons-with-holes (courtyards) it includes interior rings;
 # courtyard facades are genuinely exposed to outdoor air, so this is correct.
 
 gdf_clean["roof_area"] = gdf_clean["footprint_area"]

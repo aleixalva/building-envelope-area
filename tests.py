@@ -25,7 +25,7 @@ from shapely.geometry import box
 from shapely.strtree import STRtree
 
 # ---------------------------------------------------------------------------
-# Constants -- must match the values defined in script.py
+# Constants, which must match the values defined in pipeline.py
 # ---------------------------------------------------------------------------
 
 EPS = 0.05           # snapping tolerance in metres: buildings with a gap
@@ -57,7 +57,7 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
 
     OLD approach (removed): buffer both polygons, intersect, halve the
     perimeter of the resulting sliver. This is wrong when the intersection
-    is a genuine 2-D overlap (data error) -- half the perimeter of a blob
+    is a genuine 2-D overlap (data error), half the perimeter of a blob
     is meaningless as a wall length.
 
     NEW approach: measure what portion of each building's boundary lies
@@ -74,7 +74,7 @@ def shared_edge_length(geom_a, geom_b, buf_a, eps):
     For a clean shared edge this returns the true edge length to within
     residual floating-point noise.
     For a genuine 2-D overlap it returns roughly the outline length of the
-    overlapping region -- a data error that must be flagged separately (see
+    overlapping region, a data error that must be flagged separately (see
     the overlap audit) rather than treated as a wall.
 
     Parameters
@@ -102,7 +102,7 @@ def repair_heights(gdf, h_floor=H_FLOOR):
         With the elevation-interval deduction (§1), the deduction for
         building j is proportional to  min(Alc_Top_i, Alc_Top_j) - Alc_Base_j.
         If building i has a garbage Alc_Top that is below its own Alc_Base,
-        min(top_i, top_j) is corrupted and j receives a wrong deduction --
+        min(top_i, top_j) is corrupted and j receives a wrong deduction,
         potentially a large underestimate of the hidden wall area.
         Clamping height to zero leaves the corrupted Alc_Top in place,
         so we repair the source pair instead.
@@ -201,12 +201,12 @@ def compute_exposed_area(gdf, shared):
         For a shared wall segment of plan-length L between buildings i and j,
         the wall area hidden from outdoor air depends on the absolute
         elevations, not just the heights. Building i's wall is exposed only
-        above the neighbour's roofline -- everything at or below the
+        above the neighbour's roofline; everything at or below the
         neighbour's roof is hidden, either by the neighbour's body (above
         the neighbour's own base) or by the soil the neighbour is founded on
         (below the neighbour's base, a buried/retaining wall, NOT air-exposed).
 
-        Deduction per shared segment (asymmetric -- different for each building):
+        Deduction per shared segment (asymmetric, different for each building):
             ded_i = L * clip(min(top_i, top_j) - base_i, 0, h_i)
             ded_j = L * clip(min(top_i, top_j) - base_j, 0, h_j)
 
@@ -224,7 +224,7 @@ def compute_exposed_area(gdf, shared):
 
     MODELLING NOTE:
         Walls below a higher neighbour's base elevation are treated as buried
-        against soil -- correct for an outdoor-air exposure model. Ground-
+        against soil (correct for an outdoor-air exposure model). Ground-
         contact area (a distinct heat-transfer path) is NOT computed here.
 
     Parameters
@@ -250,7 +250,7 @@ def compute_exposed_area(gdf, shared):
 
     gdf["wall_area_naive"] = gdf.geometry.length * height
     # geometry.length is the perimeter of the 2-D footprint.
-    # For polygons-with-holes (courtyards), it includes interior rings --
+    # For polygons-with-holes (courtyards), it includes interior rings;
     # courtyard facades are genuinely exposed to outdoor air, so this is correct.
 
     gdf["roof_area"] = gdf["footprint_area"]
@@ -380,18 +380,18 @@ def test_a_flat_regression():
 
 def test_b_slope():
     """
-    Test B: Slope -- the case the old code gets wrong.
+    Test B: Slope (the case the old code gets wrong).
 
     Building i: Alc_Base=0, Alc_Top=10 (h=10).
     Building j: Alc_Base=5, Alc_Top=13 (h=8).  Shared edge L ~ 10 m.
 
     Physical picture:
         Building j sits on higher terrain. The shared face at x=10 runs:
-          z=0..5   -- building j has not started yet; building i's wall here
-                      is buried against the soil that j is founded on
-                      (NOT outdoor-air exposed; ground-contact only)
-          z=5..10  -- both buildings are present; wall of i is hidden by j
-          z=10..13 -- only building j exists; it has an exposed strip here
+          z=0..5:  building j has not started yet; building i's wall here
+                   is buried against the soil that j is founded on
+                   (not outdoor-air exposed; ground-contact only)
+          z=5..10: both buildings are present; wall of i is hidden by j
+          z=10..13: only building j exists; it has an exposed strip here
 
         So building i has ZERO exposed wall along this segment.
         Building j has an exposed strip of height 13-10 = 3 m, giving L*3 = 30 m².
@@ -448,8 +448,8 @@ def test_c_containment():
     Test C: Containment detection.
 
     A 30x30 m box (900 m²) fully contains a 5x5 m box (25 m²).
-    The overlap is 100% of the smaller footprint -- far above the 90%
-    threshold -- so the small building must be flagged for removal.
+    The overlap is 100% of the smaller footprint (far above the 90%
+    threshold), so the small building must be flagged for removal.
     This indicates a digitizing error where a block-level polygon was
     drawn on top of the individual unit polygons within it.
     """
@@ -486,11 +486,11 @@ def test_c_containment():
 
 def test_d_partial_overlap():
     """
-    Test D: Partial overlap -- data error, not containment.
+    Test D: Partial overlap (data error, not containment).
 
     Box i occupies x=[0,10], box j occupies x=[6,16]. They overlap along
     x=[6,10], full y=[0,10], giving an overlap area of 40 m².
-    Each box has area 100 m², so overlap fraction = 40% -- below the 90%
+    Each box has area 100 m², so overlap fraction = 40%, below the 90%
     containment threshold.
 
     Expected behaviour:
@@ -591,7 +591,7 @@ def test_f_height_repair():
     ded_j_expected = L * 10.0
     assert abs(result.loc[1, "wall_deduction"] - ded_j_expected) < 1.0, \
         (f"ded_j = {result.loc[1, 'wall_deduction']:.2f}, "
-         f"expected {ded_j_expected:.2f} -- was the repaired Alc_Top used?")
+         f"expected {ded_j_expected:.2f} (was the repaired Alc_Top used?)")
 
     # ded_i = L * clip(min(13,10) - 10, 0, 3) = L * 0 = 0
     # building i sits entirely above building j's roof: no hidden wall
