@@ -145,13 +145,8 @@ uv --version
 ### Step 2 — Get the dataset
 
 The ICC building GeoPackage (`EdificiosAMB.gpkg`, 571 MB) is not included in
-this repository. Obtain it from the ICC download service and place it at:
-
-```
-data/buildings.gpkg
-```
-
-(Create the `data/` folder inside the repository if it does not exist yet.)
+this repository. Obtain it from the ICC download service and place it
+anywhere on your system.
 
 ### Step 3 — Create the environment
 
@@ -194,12 +189,12 @@ Use it for every command below.
 ### Run the pipeline
 
 ```bash
-uv run python envelope_area.py --input data/buildings.gpkg --output output/
+uv run python envelope_area.py --input /path/to/buildings.gpkg --output /path/to/results/
 ```
 
-Replace the paths after `--input` and `--output` with the actual locations on
-your system if they differ. The `--input` file must be a GeoPackage (`.gpkg`);
-the `--output` folder will be created if it does not exist.
+The `--output` folder will be created if it does not exist. If you omit either
+flag, the script falls back to `data/buildings.gpkg` for input and `output/`
+for output, both relative to the repository folder.
 
 The pipeline prints a progress summary to the terminal as it runs and writes
 three files when it finishes:
