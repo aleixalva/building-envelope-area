@@ -202,23 +202,6 @@ following added columns:
 
 ---
 
-## Reference results (full AMB, previous pipeline version)
-
-The original pipeline produced the following totals on the full 851,505-building
-dataset. These serve as a regression baseline; the corrected pipeline will
-differ on sloped tiles (where the old `min(height)` formula was wrong) but
-should agree closely on flat tiles.
-
-| Quantity | Value |
-|----------|-------|
-| Buildings processed | 850,136 |
-| Total roof area | 44,440,670 m² |
-| Total naive wall area | 363,900,900 m² |
-| Total wall deduction | 257,686,000 m² |
-| Total exposed area | 152,386,300 m² |
-
----
-
 ## Author
 
 Aleix Alva, aleix.alva@upc.edu
